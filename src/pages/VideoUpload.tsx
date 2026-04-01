@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, X, Image as ImageIcon, Film } from 'lucide-react';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db, storage } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 
 const VideoUpload: React.FC = () => {
@@ -70,47 +68,46 @@ const VideoUpload: React.FC = () => {
 
     try {
       // 1. Upload Video
-      const videoRef = ref(storage, `videos/${user.id}/${Date.now()}_${videoFile!.name}`);
-      const videoUploadTask = uploadBytesResumable(videoRef, videoFile!);
+      const videoExt = videoFile!.name.split('.').pop();
+      const videoPath = `${user.id}/${Date.now()}.${videoExt}`;
+      const { data: videoData, error: videoUploadError } = await supabase.storage
+        .from('videos')
+        .upload(videoPath, videoFile!);
+
+      if (videoUploadError) throw videoUploadError;
+      setUploadProgress(50);
 
       // 2. Upload Thumbnail
-      const thumbnailRef = ref(storage, `thumbnails/${user.id}/${Date.now()}_${thumbnailFile!.name}`);
-      const thumbnailUploadTask = uploadBytesResumable(thumbnailRef, thumbnailFile!);
+      const thumbExt = thumbnailFile!.name.split('.').pop();
+      const thumbPath = `${user.id}/${Date.now()}.${thumbExt}`;
+      const { data: thumbData, error: thumbUploadError } = await supabase.storage
+        .from('thumbnails')
+        .upload(thumbPath, thumbnailFile!);
 
-      // Track video progress (as it's usually larger)
-      videoUploadTask.on('state_changed', 
-        (snapshot) => {
-          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-          setUploadProgress(progress);
-        },
-        (error) => {
-          console.error('Video upload error:', error);
-          setError('Video yuklashda xatolik yuz berdi.');
-          setUploading(false);
-        }
-      );
+      if (thumbUploadError) throw thumbUploadError;
+      setUploadProgress(90);
 
-      // Wait for both uploads to complete
-      await Promise.all([videoUploadTask, thumbnailUploadTask]);
+      const { data: { publicUrl: videoUrl } } = supabase.storage.from('videos').getPublicUrl(videoPath);
+      const { data: { publicUrl: thumbnailUrl } } = supabase.storage.from('thumbnails').getPublicUrl(thumbPath);
 
-      const videoUrl = await getDownloadURL(videoRef);
-      const thumbnailUrl = await getDownloadURL(thumbnailRef);
+      // 3. Save to Database
+      const { error: dbError } = await supabase
+        .from('videos')
+        .insert([{
+          title,
+          description,
+          videoUrl,
+          thumbnailUrl,
+          userId: user.id,
+          userName: user.name,
+          userAvatar: user.avatar || '',
+          views: 0,
+          likes: 0,
+          dislikes: 0,
+          created_at: new Date().toISOString()
+        }]);
 
-      // 3. Save to Firestore
-      await addDoc(collection(db, 'videos'), {
-        title,
-        description,
-        videoUrl,
-        thumbnailUrl,
-        userId: user.id,
-        userName: user.name,
-        userAvatar: user.avatar || '',
-        views: 0,
-        likes: 0,
-        dislikes: 0,
-        createdAt: new Date().toISOString(),
-        serverCreatedAt: serverTimestamp()
-      });
+      if (dbError) throw dbError;
 
       localStorage.removeItem('upload_draft_title');
       localStorage.removeItem('upload_draft_description');

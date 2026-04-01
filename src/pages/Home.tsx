@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { collection, query, orderBy, getDocs, where } from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { Video } from '../types';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
@@ -17,23 +16,19 @@ const Home: React.FC = () => {
     const fetchVideos = async () => {
       setLoading(true);
       try {
-        const videosRef = collection(db, 'videos');
-        const q = query(videosRef, orderBy('createdAt', 'desc'));
-        const querySnapshot = await getDocs(q);
-        const fetchedVideos = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Video[];
+        let query = supabase
+          .from('videos')
+          .select('*')
+          .order('created_at', { ascending: false });
 
         if (searchQuery) {
-          const filtered = fetchedVideos.filter(v => 
-            v.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            v.description.toLowerCase().includes(searchQuery.toLowerCase())
-          );
-          setVideos(filtered);
-        } else {
-          setVideos(fetchedVideos);
+          query = query.or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`);
         }
+
+        const { data, error } = await query;
+
+        if (error) throw error;
+        setVideos(data as Video[]);
       } catch (err) {
         console.error('Error fetching videos:', err);
       } finally {

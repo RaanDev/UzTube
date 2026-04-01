@@ -1,23 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ThumbsUp, Share2, MoreHorizontal, Send, X } from 'lucide-react';
-import { 
-  doc, 
-  getDoc, 
-  collection, 
-  query, 
-  where, 
-  orderBy, 
-  getDocs, 
-  addDoc, 
-  updateDoc, 
-  increment, 
-  setDoc, 
-  deleteDoc,
-  onSnapshot,
-  limit
-} from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { Video, Comment } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -49,15 +33,21 @@ const VideoPlayer: React.FC = () => {
     const fetchVideo = async () => {
       setLoading(true);
       try {
-        const videoDoc = await getDoc(doc(db, 'videos', id));
-        if (videoDoc.exists()) {
-          const videoData = { id: videoDoc.id, ...videoDoc.data() } as Video;
-          setVideo(videoData);
+        const { data, error: fetchError } = await supabase
+          .from('videos')
+          .select('*')
+          .eq('id', id)
+          .single();
+
+        if (fetchError) throw fetchError;
+        if (data) {
+          setVideo(data as Video);
           
-          // Increment views
-          await updateDoc(doc(db, 'videos', id), {
-            views: increment(1)
-          });
+          // Increment views (non-atomic for simplicity, better to use RPC)
+          await supabase
+            .from('videos')
+            .update({ views: (data.views || 0) + 1 })
+            .eq('id', id);
         } else {
           setError('Video topilmadi');
         }
@@ -71,74 +61,111 @@ const VideoPlayer: React.FC = () => {
 
     fetchVideo();
 
-    // Listen for comments
-    const commentsQuery = query(
-      collection(db, 'videos', id, 'comments'),
-      orderBy('createdAt', 'desc')
-    );
-    const unsubscribeComments = onSnapshot(commentsQuery, (snapshot) => {
-      const fetchedComments = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Comment[];
-      setComments(fetchedComments);
-    });
+    // Fetch comments
+    const fetchComments = async () => {
+      const { data, error: commentsError } = await supabase
+        .from('comments')
+        .select('*')
+        .eq('videoId', id)
+        .order('created_at', { ascending: false });
+
+      if (commentsError) {
+        console.error('Error fetching comments:', commentsError);
+      } else {
+        setComments(data as Comment[]);
+      }
+    };
+    fetchComments();
+
+    // Subscribe to new comments
+    const commentsSubscription = supabase
+      .channel(`comments-${id}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'comments',
+        filter: `videoId=eq.${id}`
+      }, (payload) => {
+        setComments(prev => [payload.new as Comment, ...prev]);
+      })
+      .subscribe();
 
     // Fetch recommendations
     const fetchRecommendations = async () => {
       try {
-        const q = query(collection(db, 'videos'), limit(10));
-        const snapshot = await getDocs(q);
-        const fetched = snapshot.docs
-          .map(doc => ({ id: doc.id, ...doc.data() } as Video))
-          .filter(v => v.id !== id);
-        setRecommendedVideos(fetched);
+        const { data, error: recError } = await supabase
+          .from('videos')
+          .select('*')
+          .neq('id', id)
+          .limit(10);
+
+        if (recError) throw recError;
+        setRecommendedVideos(data as Video[]);
       } catch (err) {
         console.error('Error fetching recommendations:', err);
       }
     };
     fetchRecommendations();
 
-    return () => unsubscribeComments();
+    return () => {
+      supabase.removeChannel(commentsSubscription);
+    };
   }, [id]);
 
   useEffect(() => {
     if (!user || !id || !video) return;
 
-    // Check reaction
-    const checkReaction = async () => {
-      const likeDoc = await getDoc(doc(db, 'video_likes', `${user.id}_${id}`));
-      setIsLiked(likeDoc.exists());
+    const checkStatus = async () => {
+      // Check reaction
+      const { data: likeData } = await supabase
+        .from('video_likes')
+        .select('*')
+        .eq('userId', user.id)
+        .eq('videoId', id)
+        .single();
+      setIsLiked(!!likeData);
       
-      const dislikeDoc = await getDoc(doc(db, 'video_dislikes', `${user.id}_${id}`));
-      setIsDisliked(dislikeDoc.exists());
+      const { data: dislikeData } = await supabase
+        .from('video_dislikes')
+        .select('*')
+        .eq('userId', user.id)
+        .eq('videoId', id)
+        .single();
+      setIsDisliked(!!dislikeData);
+
+      // Check subscription
+      const { data: subData } = await supabase
+        .from('subscriptions')
+        .select('*')
+        .eq('followerId', user.id)
+        .eq('followingId', video.userId)
+        .single();
+      setIsSubscribed(!!subData);
     };
 
-    // Check subscription
-    const checkSubscription = async () => {
-      const subDoc = await getDoc(doc(db, 'subscriptions', `${user.id}_${video.userId}`));
-      setIsSubscribed(subDoc.exists());
-    };
-
-    checkReaction();
-    checkSubscription();
+    checkStatus();
   }, [id, user, video]);
 
   const handleSubscribe = async () => {
     if (!user || !video) return setError('Obuna bo\'lish uchun tizimga kiring');
     if (user.id === video.userId) return setError('O\'zingizga obuna bo\'la olmaysiz');
     
-    const subId = `${user.id}_${video.userId}`;
     try {
       if (isSubscribed) {
-        await deleteDoc(doc(db, 'subscriptions', subId));
+        await supabase
+          .from('subscriptions')
+          .delete()
+          .eq('followerId', user.id)
+          .eq('followingId', video.userId);
         setIsSubscribed(false);
       } else {
-        await setDoc(doc(db, 'subscriptions', subId), {
-          followerId: user.id,
-          followingId: video.userId,
-          createdAt: new Date().toISOString()
-        });
+        await supabase
+          .from('subscriptions')
+          .insert([{
+            followerId: user.id,
+            followingId: video.userId,
+            created_at: new Date().toISOString()
+          }]);
         setIsSubscribed(true);
       }
     } catch (err) {
@@ -149,27 +176,55 @@ const VideoPlayer: React.FC = () => {
 
   const handleLike = async () => {
     if (!user || !id || !video) return setError('Like bosish uchun tizimga kiring');
-    const likeId = `${user.id}_${id}`;
-    const dislikeId = `${user.id}_${id}`;
 
     try {
       if (isLiked) {
-        await deleteDoc(doc(db, 'video_likes', likeId));
-        await updateDoc(doc(db, 'videos', id), { likes: increment(-1) });
+        await supabase
+          .from('video_likes')
+          .delete()
+          .eq('userId', user.id)
+          .eq('videoId', id);
+        
+        await supabase
+          .from('videos')
+          .update({ likes: Math.max(0, (video.likes || 0) - 1) })
+          .eq('id', id);
+          
         setIsLiked(false);
       } else {
         if (isDisliked) {
-          await deleteDoc(doc(db, 'video_dislikes', dislikeId));
-          await updateDoc(doc(db, 'videos', id), { dislikes: increment(-1) });
+          await supabase
+            .from('video_dislikes')
+            .delete()
+            .eq('userId', user.id)
+            .eq('videoId', id);
+            
+          await supabase
+            .from('videos')
+            .update({ dislikes: Math.max(0, (video.dislikes || 0) - 1) })
+            .eq('id', id);
           setIsDisliked(false);
         }
-        await setDoc(doc(db, 'video_likes', likeId), { userId: user.id, videoId: id });
-        await updateDoc(doc(db, 'videos', id), { likes: increment(1) });
+        
+        await supabase
+          .from('video_likes')
+          .insert([{ userId: user.id, videoId: id }]);
+          
+        await supabase
+          .from('videos')
+          .update({ likes: (video.likes || 0) + 1 })
+          .eq('id', id);
+          
         setIsLiked(true);
       }
+      
       // Refresh video data
-      const updatedVideo = await getDoc(doc(db, 'videos', id));
-      setVideo({ id: updatedVideo.id, ...updatedVideo.data() } as Video);
+      const { data: updatedVideo } = await supabase
+        .from('videos')
+        .select('*')
+        .eq('id', id)
+        .single();
+      if (updatedVideo) setVideo(updatedVideo as Video);
     } catch (err) {
       console.error(err);
       setError('Amalni bajarishda xatolik yuz berdi');
@@ -178,27 +233,53 @@ const VideoPlayer: React.FC = () => {
 
   const handleDislike = async () => {
     if (!user || !id || !video) return setError('Dislike bosish uchun tizimga kiring');
-    const likeId = `${user.id}_${id}`;
-    const dislikeId = `${user.id}_${id}`;
 
     try {
       if (isDisliked) {
-        await deleteDoc(doc(db, 'video_dislikes', dislikeId));
-        await updateDoc(doc(db, 'videos', id), { dislikes: increment(-1) });
+        await supabase
+          .from('video_dislikes')
+          .delete()
+          .eq('userId', user.id)
+          .eq('videoId', id);
+          
+        await supabase
+          .from('videos')
+          .update({ dislikes: Math.max(0, (video.dislikes || 0) - 1) })
+          .eq('id', id);
         setIsDisliked(false);
       } else {
         if (isLiked) {
-          await deleteDoc(doc(db, 'video_likes', likeId));
-          await updateDoc(doc(db, 'videos', id), { likes: increment(-1) });
+          await supabase
+            .from('video_likes')
+            .delete()
+            .eq('userId', user.id)
+            .eq('videoId', id);
+            
+          await supabase
+            .from('videos')
+            .update({ likes: Math.max(0, (video.likes || 0) - 1) })
+            .eq('id', id);
           setIsLiked(false);
         }
-        await setDoc(doc(db, 'video_dislikes', dislikeId), { userId: user.id, videoId: id });
-        await updateDoc(doc(db, 'videos', id), { dislikes: increment(1) });
+        
+        await supabase
+          .from('video_dislikes')
+          .insert([{ userId: user.id, videoId: id }]);
+          
+        await supabase
+          .from('videos')
+          .update({ dislikes: (video.dislikes || 0) + 1 })
+          .eq('id', id);
         setIsDisliked(true);
       }
+      
       // Refresh video data
-      const updatedVideo = await getDoc(doc(db, 'videos', id));
-      setVideo({ id: updatedVideo.id, ...updatedVideo.data() } as Video);
+      const { data: updatedVideo } = await supabase
+        .from('videos')
+        .select('*')
+        .eq('id', id)
+        .single();
+      if (updatedVideo) setVideo(updatedVideo as Video);
     } catch (err) {
       console.error(err);
       setError('Amalni bajarishda xatolik yuz berdi');
@@ -211,16 +292,30 @@ const VideoPlayer: React.FC = () => {
     if (!newComment.trim()) return;
 
     try {
-      await addDoc(collection(db, 'videos', id, 'comments'), {
-        videoId: id,
-        userId: user.id,
-        userName: user.name,
-        userAvatar: user.avatar || '',
-        text: newComment,
-        createdAt: new Date().toISOString()
-      });
+      const { error: commentError } = await supabase
+        .from('comments')
+        .insert([{
+          videoId: id,
+          userId: user.id,
+          userName: user.name,
+          userAvatar: user.avatar || '',
+          text: newComment,
+          created_at: new Date().toISOString()
+        }]);
+
+      if (commentError) throw commentError;
+      
       setNewComment('');
       localStorage.removeItem(`comment_draft_${id}`);
+      
+      // Fetch comments again to be sure (though subscription should handle it)
+      const { data } = await supabase
+        .from('comments')
+        .select('*')
+        .eq('videoId', id)
+        .order('created_at', { ascending: false });
+      if (data) setComments(data as Comment[]);
+      
     } catch (err) {
       console.error(err);
       setError('Izoh qoldirishda xatolik yuz berdi');

@@ -6,8 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../lib/supabase';
 
 const LikedVideos: React.FC = () => {
   const { user } = useAuth();
@@ -24,28 +23,18 @@ const LikedVideos: React.FC = () => {
 
     const fetchLikedVideos = async () => {
       try {
-        const q = query(
-          collection(db, 'likes'),
-          where('userId', '==', user.id)
-        );
-        const snapshot = await getDocs(q);
-        const videoIds = snapshot.docs.map(doc => doc.data().videoId);
+        const { data, error } = await supabase
+          .from('video_likes')
+          .select('*, videos(*)')
+          .eq('userId', user.id);
         
-        if (videoIds.length === 0) {
-          setVideos([]);
-          return;
-        }
-
-        const videoPromises = videoIds.map(async (id: string) => {
-          const d = await getDoc(doc(db, 'videos', id));
-          if (d.exists()) {
-            return { id: d.id, ...d.data() } as Video;
-          }
-          return null;
-        });
+        if (error) throw error;
         
-        const results = await Promise.all(videoPromises);
-        setVideos(results.filter(v => v !== null) as Video[]);
+        const likedVideos = data
+          .map((item: any) => item.videos)
+          .filter((v: any) => v !== null) as Video[];
+          
+        setVideos(likedVideos);
       } catch (err) {
         console.error('Liked videolarni yuklashda xatolik:', err);
       } finally {

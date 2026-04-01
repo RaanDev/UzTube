@@ -1,13 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { 
-  onAuthStateChanged, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  signOut,
-  User as FirebaseUser 
-} from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { supabase } from '../lib/supabase';
 import { User } from '../types';
 
 interface AuthContextType {
@@ -24,45 +16,84 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        // Check if user exists in Firestore
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-        if (userDoc.exists()) {
-          setUser({
-            id: firebaseUser.uid,
-            ...userDoc.data()
-          } as User);
+    try {
+      // Get initial session
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          fetchUserProfile(session.user.id);
         } else {
-          // Create new user in Firestore
-          const newUser: User = {
-            id: firebaseUser.uid,
-            name: firebaseUser.displayName || 'User',
-            email: firebaseUser.email || '',
-            avatar: firebaseUser.photoURL || '',
-            created_at: new Date().toISOString()
-          };
-          await setDoc(doc(db, 'users', firebaseUser.uid), {
-            name: newUser.name,
-            email: newUser.email,
-            avatar: newUser.avatar,
-            created_at: newUser.created_at
-          });
-          setUser(newUser);
+          setLoading(false);
         }
-      } else {
-        setUser(null);
-      }
-      setLoading(false);
-    });
+      }).catch(err => {
+        console.error('Supabase session error:', err);
+        setLoading(false);
+      });
 
-    return () => unsubscribe();
+      // Listen for auth changes
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (session?.user) {
+          await fetchUserProfile(session.user.id);
+        } else {
+          setUser(null);
+          setLoading(false);
+        }
+      });
+
+      return () => subscription.unsubscribe();
+    } catch (error) {
+      console.error('Supabase initialization or usage error:', error);
+      setLoading(false);
+    }
   }, []);
 
-  const loginWithGoogle = async () => {
-    const provider = new GoogleAuthProvider();
+  const fetchUserProfile = async (userId: string) => {
     try {
-      await signInWithPopup(auth, provider);
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error && error.code === 'PGRST116') {
+        // User doesn't exist in our 'users' table yet, create them
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (authUser) {
+          const newUser: User = {
+            id: authUser.id,
+            name: authUser.user_metadata.full_name || 'User',
+            email: authUser.email || '',
+            avatar: authUser.user_metadata.avatar_url || '',
+            created_at: new Date().toISOString()
+          };
+          
+          const { error: insertError } = await supabase
+            .from('users')
+            .insert([newUser]);
+
+          if (insertError) throw insertError;
+          setUser(newUser);
+        }
+      } else if (error) {
+        throw error;
+      } else {
+        setUser(data as User);
+      }
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loginWithGoogle = async () => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
     } catch (error) {
       console.error('Login error:', error);
       throw error;
@@ -71,7 +102,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
-      await signOut(auth);
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
     } catch (error) {
       console.error('Logout error:', error);
       throw error;

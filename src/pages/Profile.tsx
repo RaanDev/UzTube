@@ -6,20 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
-import { 
-  doc, 
-  getDoc, 
-  collection, 
-  query, 
-  where, 
-  getDocs, 
-  deleteDoc, 
-  updateDoc,
-  setDoc,
-  serverTimestamp
-} from 'firebase/firestore';
-import { db, storage } from '../firebase';
-import { ref, deleteObject } from 'firebase/storage';
+import { supabase } from '../lib/supabase';
 
 const Profile: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -39,23 +26,37 @@ const Profile: React.FC = () => {
   const fetchProfile = async () => {
     if (!id) return;
     try {
-      const userDoc = await getDoc(doc(db, 'users', id));
-      if (userDoc.exists()) {
-        const userData = userDoc.data() as User;
-        
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (userError) throw userError;
+      
+      if (userData) {
         // Fetch videos
-        const vQuery = query(collection(db, 'videos'), where('userId', '==', id));
-        const vSnapshot = await getDocs(vQuery);
-        const videos = vSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Video[];
+        const { data: videos, error: videoError } = await supabase
+          .from('videos')
+          .select('*')
+          .eq('userId', id)
+          .order('created_at', { ascending: false });
+
+        if (videoError) throw videoError;
         
-        setProfile({ ...userData, id, videos });
+        setProfile({ ...userData, videos: videos as Video[] });
       } else {
         setProfile(null);
       }
       
       if (currentUser && !isOwner) {
-        const subDoc = await getDoc(doc(db, 'subscriptions', `${currentUser.id}_${id}`));
-        setIsSubscribed(subDoc.exists());
+        const { data: subData } = await supabase
+          .from('subscriptions')
+          .select('*')
+          .eq('followerId', currentUser.id)
+          .eq('followingId', id)
+          .single();
+        setIsSubscribed(!!subData);
       }
     } catch (err) {
       console.error(err);
@@ -74,16 +75,21 @@ const Profile: React.FC = () => {
     if (!id) return;
     
     try {
-      const subId = `${currentUser.id}_${id}`;
       if (isSubscribed) {
-        await deleteDoc(doc(db, 'subscriptions', subId));
+        await supabase
+          .from('subscriptions')
+          .delete()
+          .eq('followerId', currentUser.id)
+          .eq('followingId', id);
         setIsSubscribed(false);
       } else {
-        await setDoc(doc(db, 'subscriptions', subId), {
-          subscriberId: currentUser.id,
-          channelId: id,
-          created_at: new Date().toISOString()
-        });
+        await supabase
+          .from('subscriptions')
+          .insert([{
+            followerId: currentUser.id,
+            followingId: id,
+            created_at: new Date().toISOString()
+          }]);
         setIsSubscribed(true);
       }
     } catch (err) {
@@ -103,25 +109,33 @@ const Profile: React.FC = () => {
     if (!deletingVideoId) return;
 
     try {
-      const videoDoc = await getDoc(doc(db, 'videos', deletingVideoId));
-      if (videoDoc.exists()) {
-        const videoData = videoDoc.data() as Video;
-        
+      const { data: videoData, error: fetchError } = await supabase
+        .from('videos')
+        .select('*')
+        .eq('id', deletingVideoId)
+        .single();
+
+      if (fetchError) throw fetchError;
+      
+      if (videoData) {
         // Delete from Storage
         try {
-          const videoRef = ref(storage, videoData.videoUrl);
-          const thumbRef = ref(storage, videoData.thumbnailUrl);
-          await deleteObject(videoRef);
-          await deleteObject(thumbRef);
+          // Extract file paths from URLs
+          const videoPath = videoData.videoUrl.split('/').pop();
+          const thumbPath = videoData.thumbnailUrl.split('/').pop();
+          
+          if (videoPath) await supabase.storage.from('videos').remove([videoPath]);
+          if (thumbPath) await supabase.storage.from('thumbnails').remove([thumbPath]);
         } catch (storageErr) {
-          console.warn('Storage deletion failed, continuing with Firestore deletion:', storageErr);
+          console.warn('Storage deletion failed, continuing with Database deletion:', storageErr);
         }
 
-        // Delete from Firestore
-        await deleteDoc(doc(db, 'videos', deletingVideoId));
+        // Delete from Database
+        await supabase
+          .from('videos')
+          .delete()
+          .eq('id', deletingVideoId);
         
-        // Cleanup likes, comments, etc. (optional but good practice)
-        // For now, let's just refresh
         setDeletingVideoId(null);
         fetchProfile();
       }
@@ -145,10 +159,14 @@ const Profile: React.FC = () => {
     if (!editingVideo) return;
 
     try {
-      await updateDoc(doc(db, 'videos', editingVideo.id), {
-        title: editTitle,
-        description: editDescription
-      });
+      await supabase
+        .from('videos')
+        .update({
+          title: editTitle,
+          description: editDescription
+        })
+        .eq('id', editingVideo.id);
+        
       setEditingVideo(null);
       fetchProfile();
     } catch (err: any) {

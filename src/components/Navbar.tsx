@@ -5,18 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { AppNotification } from '../types';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
-import { 
-  collection, 
-  query, 
-  where, 
-  orderBy, 
-  onSnapshot, 
-  doc, 
-  updateDoc, 
-  writeBatch,
-  getDocs
-} from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../lib/supabase';
 
 interface NavbarProps {
   onMenuClick: () => void;
@@ -39,26 +28,39 @@ const Navbar: React.FC<NavbarProps> = ({ onMenuClick, isDarkMode }) => {
       return;
     }
 
-    // Real-time notifications from Firestore
-    const q = query(
-      collection(db, 'notifications'),
-      where('userId', '==', user.id),
-      orderBy('created_at', 'desc')
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const notifs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as AppNotification[];
+    // Initial fetch
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('userId', user.id)
+        .order('created_at', { ascending: false });
       
-      setNotifications(notifs);
-      setUnreadCount(notifs.filter(n => !n.isRead).length);
-    }, (error) => {
-      console.error('Bildirishnomalarni yuklashda xato:', error);
-    });
+      if (error) {
+        console.error('Bildirishnomalarni yuklashda xato:', error);
+      } else {
+        setNotifications(data as AppNotification[]);
+        setUnreadCount(data.filter(n => !n.isRead).length);
+      }
+    };
+    fetchNotifications();
 
-    return () => unsubscribe();
+    // Real-time notifications from Supabase
+    const channel = supabase
+      .channel(`notifications-${user.id}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'notifications',
+        filter: `userId=eq.${user.id}`
+      }, () => {
+        fetchNotifications();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   useEffect(() => {
@@ -74,9 +76,10 @@ const Navbar: React.FC<NavbarProps> = ({ onMenuClick, isDarkMode }) => {
 
   const markAsRead = async (id: string) => {
     try {
-      await updateDoc(doc(db, 'notifications', id), {
-        isRead: true
-      });
+      await supabase
+        .from('notifications')
+        .update({ isRead: true })
+        .eq('id', id);
     } catch (err) {
       console.error(err);
     }
@@ -85,17 +88,11 @@ const Navbar: React.FC<NavbarProps> = ({ onMenuClick, isDarkMode }) => {
   const markAllAsRead = async () => {
     if (!user) return;
     try {
-      const q = query(
-        collection(db, 'notifications'),
-        where('userId', '==', user.id),
-        where('isRead', '==', false)
-      );
-      const snapshot = await getDocs(q);
-      const batch = writeBatch(db);
-      snapshot.docs.forEach((d) => {
-        batch.update(d.ref, { isRead: true });
-      });
-      await batch.commit();
+      await supabase
+        .from('notifications')
+        .update({ isRead: true })
+        .eq('userId', user.id)
+        .eq('isRead', false);
     } catch (err) {
       console.error(err);
     }

@@ -8,13 +8,12 @@ import {
   Moon, 
   Sun, 
   X,
-  User
+  User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
 import { Channel } from '../types';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../lib/supabase';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -31,28 +30,18 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, isDarkMode, toggleTh
     if (user && isOpen) {
       const fetchSubscriptions = async () => {
         try {
-          const q = query(
-            collection(db, 'subscriptions'),
-            where('subscriberId', '==', user.id)
-          );
-          const snapshot = await getDocs(q);
-          const channelIds = snapshot.docs.map(doc => doc.data().channelId);
+          const { data, error } = await supabase
+            .from('subscriptions')
+            .select('*, users!followingId(*)')
+            .eq('followerId', user.id);
           
-          if (channelIds.length === 0) {
-            setSubscriptions([]);
-            return;
-          }
-
-          const subPromises = channelIds.map(async (id: string) => {
-            const d = await getDoc(doc(db, 'users', id));
-            if (d.exists()) {
-              return { id: d.id, ...d.data() } as Channel;
-            }
-            return null;
-          });
+          if (error) throw error;
           
-          const results = await Promise.all(subPromises);
-          setSubscriptions(results.filter(c => c !== null) as Channel[]);
+          const channels = data
+            .map((item: any) => item.users)
+            .filter((c: any) => c !== null) as Channel[];
+            
+          setSubscriptions(channels);
         } catch (err) {
           console.error('Obunalarni yuklashda xatolik:', err);
         }
@@ -142,7 +131,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, isDarkMode, toggleTh
                             {channel.avatar ? (
                               <img src={channel.avatar} alt={channel.name} className="w-full h-full object-cover" />
                             ) : (
-                              <User size={14} className="text-zinc-500" />
+                              <UserIcon size={14} className="text-zinc-500" />
                             )}
                           </div>
                           <span className="text-sm truncate">{channel.name}</span>
