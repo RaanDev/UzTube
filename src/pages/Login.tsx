@@ -15,7 +15,14 @@ const Login: React.FC = () => {
       await loginWithGoogle();
       navigate('/');
     } catch (err: any) {
-      setError('Google orqali kirishda xatolik yuz berdi');
+      console.error('Login error details:', err);
+      if (err.code === 'auth/popup-blocked') {
+        setError('Popup bloklandi. Iltimos, brauzeringizda popuplarga ruxsat bering.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('Ushbu domen Firebase-da ruxsat etilmagan. Iltimos, AIS preview URL-ni authorized domains ro\'yxatiga qo\'shing.');
+      } else {
+        setError(`Google orqali kirishda xatolik yuz berdi: ${err.message || 'Noma\'lum xato'}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -37,8 +44,13 @@ const Login: React.FC = () => {
 
         <div className="space-y-4">
           {error && (
-            <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm rounded-lg border border-red-100 dark:border-red-900/30">
-              {error}
+            <div className="space-y-2">
+              <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm rounded-lg border border-red-100 dark:border-red-900/30">
+                {error}
+              </div>
+              <p className="text-xs text-zinc-500 text-center">
+                Agar xatolik davom etsa, iltimos, saytni yangi tabda ochib ko'ring (popuplar bloklangan bo'lishi mumkin).
+              </p>
             </div>
           )}
           

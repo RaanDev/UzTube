@@ -99,27 +99,27 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidUser(data) {
-      return hasRequiredFields(['name', 'email', 'createdAt']) &&
+      return hasRequiredFields(['name', 'email', 'created_at']) &&
         data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
         isValidEmail(data.email) &&
-        data.createdAt is timestamp;
+        data.created_at is string;
     }
 
     function isValidVideo(data) {
-      return hasRequiredFields(['title', 'videoUrl', 'thumbnailUrl', 'userId', 'createdAt']) &&
+      return hasRequiredFields(['title', 'videoUrl', 'thumbnailUrl', 'userId', 'created_at']) &&
         data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
         isValidUrl(data.videoUrl) &&
         isValidUrl(data.thumbnailUrl) &&
         data.userId is string &&
-        data.createdAt is timestamp;
+        data.created_at is string;
     }
 
     function isValidComment(data) {
-      return hasRequiredFields(['videoId', 'userId', 'text', 'createdAt']) &&
+      return hasRequiredFields(['videoId', 'userId', 'text', 'created_at']) &&
         data.videoId is string &&
         data.userId is string &&
         data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
-        data.createdAt is timestamp;
+        data.created_at is string;
     }
 
     // ===============================================================
