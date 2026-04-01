@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import api from '../services/api';
+import { collection, query, orderBy, getDocs, where } from 'firebase/firestore';
+import { db } from '../firebase';
 import { Video } from '../types';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
@@ -10,22 +11,37 @@ const Home: React.FC = () => {
   const [videos, setVideos] = useState<Video[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchParams] = useSearchParams();
-  const query = searchParams.get('q');
+  const searchQuery = searchParams.get('q');
 
   useEffect(() => {
     const fetchVideos = async () => {
       setLoading(true);
       try {
-        const res = await api.get(`/videos${query ? `?q=${query}` : ''}`);
-        setVideos(Array.isArray(res.data) ? res.data : []);
+        const videosRef = collection(db, 'videos');
+        const q = query(videosRef, orderBy('createdAt', 'desc'));
+        const querySnapshot = await getDocs(q);
+        const fetchedVideos = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Video[];
+
+        if (searchQuery) {
+          const filtered = fetchedVideos.filter(v => 
+            v.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            v.description.toLowerCase().includes(searchQuery.toLowerCase())
+          );
+          setVideos(filtered);
+        } else {
+          setVideos(fetchedVideos);
+        }
       } catch (err) {
-        console.error(err);
+        console.error('Error fetching videos:', err);
       } finally {
         setLoading(false);
       }
     };
     fetchVideos();
-  }, [query]);
+  }, [searchQuery]);
 
   const formatCount = (num: number) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + ' mln';
@@ -71,9 +87,9 @@ const Home: React.FC = () => {
 
   return (
     <div className="p-4">
-      {query && (
+      {searchQuery && (
         <h2 className="text-lg font-medium mb-4">
-          "{query}" uchun qidiruv natijalari
+          "{searchQuery}" uchun qidiruv natijalari
         </h2>
       )}
       

@@ -1,60 +1,85 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '../services/api';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut,
+  User as FirebaseUser 
+} from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase';
 import { User } from '../types';
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (token: string, user: User) => void;
-  logout: () => void;
+  loginWithGoogle: () => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(() => {
-    const savedUser = localStorage.getItem('user');
-    try {
-      return savedUser ? JSON.parse(savedUser) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [loading, setLoading] = useState(!localStorage.getItem('token'));
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      const token = localStorage.getItem('token');
-      if (token) {
-        try {
-          const res = await api.get('/auth/me');
-          setUser(res.data);
-          localStorage.setItem('user', JSON.stringify(res.data));
-        } catch (err) {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-          setUser(null);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        // Check if user exists in Firestore
+        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (userDoc.exists()) {
+          setUser({
+            id: firebaseUser.uid,
+            ...userDoc.data()
+          } as User);
+        } else {
+          // Create new user in Firestore
+          const newUser: User = {
+            id: firebaseUser.uid,
+            name: firebaseUser.displayName || 'User',
+            email: firebaseUser.email || '',
+            avatar: firebaseUser.photoURL || '',
+            created_at: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'users', firebaseUser.uid), {
+            name: newUser.name,
+            email: newUser.email,
+            avatar: newUser.avatar,
+            created_at: newUser.created_at
+          });
+          setUser(newUser);
         }
+      } else {
+        setUser(null);
       }
       setLoading(false);
-    };
-    checkAuth();
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const login = (token: string, userData: User) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(userData));
-    setUser(userData);
+  const loginWithGoogle = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error('Login error:', error);
+      throw error;
+    }
   };
 
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setUser(null);
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Logout error:', error);
+      throw error;
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, loginWithGoogle, logout }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,0 +1,163 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (from Firebase Auth)
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - email: string (required, email format)
+    //   - avatar: string (optional, URL)
+    //   - bio: string (optional, 0-500 chars)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: videos
+    // Document ID: videoId (auto-generated)
+    // Fields:
+    //   - title: string (required, 1-200 chars)
+    //   - description: string (optional, 0-2000 chars)
+    //   - videoUrl: string (required, URL)
+    //   - thumbnailUrl: string (required, URL)
+    //   - userId: string (required, owner UID)
+    //   - userName: string (required)
+    //   - userAvatar: string (optional)
+    //   - views: number (required, >= 0)
+    //   - likes: number (required, >= 0)
+    //   - dislikes: number (required, >= 0)
+    //   - createdAt: timestamp (required)
+    //   - category: string (optional)
+    //
+    // Collection: comments
+    // Document ID: commentId (auto-generated)
+    // Fields:
+    //   - videoId: string (required)
+    //   - userId: string (required, author UID)
+    //   - userName: string (required)
+    //   - userAvatar: string (optional)
+    //   - text: string (required, 1-1000 chars)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: subscriptions
+    // Document ID: subId (followerId_followingId)
+    // Fields:
+    //   - followerId: string (required)
+    //   - followingId: string (required)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: notifications
+    // Document ID: notifId (auto-generated)
+    // Fields:
+    //   - userId: string (required, recipient UID)
+    //   - type: string (required)
+    //   - message: string (required)
+    //   - videoId: string (optional)
+    //   - isRead: bool (required)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "muhammadsodiq7787@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['name', 'email', 'createdAt']) &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+        isValidEmail(data.email) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidVideo(data) {
+      return hasRequiredFields(['title', 'videoUrl', 'thumbnailUrl', 'userId', 'createdAt']) &&
+        data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+        isValidUrl(data.videoUrl) &&
+        isValidUrl(data.thumbnailUrl) &&
+        data.userId is string &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidComment(data) {
+      return hasRequiredFields(['videoId', 'userId', 'text', 'createdAt']) &&
+        data.videoId is string &&
+        data.userId is string &&
+        data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
+        data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /videos/{videoId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidVideo(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update: if (isOwner(resource.data.userId) || isAdmin()) && isValidVideo(request.resource.data);
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidComment(request.resource.data) && request.resource.data.userId == request.auth.uid;
+        allow update: if (isOwner(resource.data.userId) || isAdmin()) && isValidComment(request.resource.data);
+        allow delete: if isOwner(resource.data.userId) || isAdmin();
+      }
+    }
+
+    match /subscriptions/{subId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.followerId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.followerId == request.auth.uid;
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isOwner(resource.data.userId);
+      allow create: if isAuthenticated(); // Anyone can trigger a notification for someone else
+      allow update: if isOwner(resource.data.userId) && hasOnlyAllowedFields(['isRead']);
+      allow delete: if isOwner(resource.data.userId);
+    }
+  }
+}

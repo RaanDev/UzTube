@@ -1,12 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Edit2, Trash2, X } from 'lucide-react';
-import api from '../services/api';
 import { User, Video } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
+import { 
+  doc, 
+  getDoc, 
+  collection, 
+  query, 
+  where, 
+  getDocs, 
+  deleteDoc, 
+  updateDoc,
+  setDoc,
+  serverTimestamp
+} from 'firebase/firestore';
+import { db, storage } from '../firebase';
+import { ref, deleteObject } from 'firebase/storage';
 
 const Profile: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -16,25 +29,33 @@ const Profile: React.FC = () => {
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editingVideo, setEditingVideo] = useState<Video | null>(null);
-  const [deletingVideoId, setDeletingVideoId] = useState<number | null>(null);
+  const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [actionError, setActionError] = useState('');
 
-  const isOwner = currentUser?.id === Number(id);
+  const isOwner = currentUser?.id === id;
 
   const fetchProfile = async () => {
+    if (!id) return;
     try {
-      const res = await api.get(`/users/${id}`);
-      if (res.data && !res.data.error) {
-        setProfile(res.data);
+      const userDoc = await getDoc(doc(db, 'users', id));
+      if (userDoc.exists()) {
+        const userData = userDoc.data() as User;
+        
+        // Fetch videos
+        const vQuery = query(collection(db, 'videos'), where('userId', '==', id));
+        const vSnapshot = await getDocs(vQuery);
+        const videos = vSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Video[];
+        
+        setProfile({ ...userData, id, videos });
       } else {
         setProfile(null);
       }
       
       if (currentUser && !isOwner) {
-        const subRes = await api.get(`/users/${id}/is-subscribed`);
-        setIsSubscribed(subRes.data.subscribed);
+        const subDoc = await getDoc(doc(db, 'subscriptions', `${currentUser.id}_${id}`));
+        setIsSubscribed(subDoc.exists());
       }
     } catch (err) {
       console.error(err);
@@ -50,17 +71,28 @@ const Profile: React.FC = () => {
   const handleSubscribe = async () => {
     if (!currentUser) return setActionError('Obuna bo\'lish uchun tizimga kiring');
     if (isOwner) return;
+    if (!id) return;
     
     try {
-      const res = await api.post(`/users/${id}/subscribe`);
-      setIsSubscribed(res.data.subscribed);
+      const subId = `${currentUser.id}_${id}`;
+      if (isSubscribed) {
+        await deleteDoc(doc(db, 'subscriptions', subId));
+        setIsSubscribed(false);
+      } else {
+        await setDoc(doc(db, 'subscriptions', subId), {
+          subscriberId: currentUser.id,
+          channelId: id,
+          created_at: new Date().toISOString()
+        });
+        setIsSubscribed(true);
+      }
     } catch (err) {
       console.error(err);
       setActionError('Amalni bajarishda xatolik yuz berdi');
     }
   };
 
-  const handleDeleteClick = (videoId: number, e: React.MouseEvent) => {
+  const handleDeleteClick = (videoId: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setDeletingVideoId(videoId);
@@ -71,12 +103,31 @@ const Profile: React.FC = () => {
     if (!deletingVideoId) return;
 
     try {
-      await api.delete(`/videos/${deletingVideoId}`);
-      setDeletingVideoId(null);
-      fetchProfile();
+      const videoDoc = await getDoc(doc(db, 'videos', deletingVideoId));
+      if (videoDoc.exists()) {
+        const videoData = videoDoc.data() as Video;
+        
+        // Delete from Storage
+        try {
+          const videoRef = ref(storage, videoData.videoUrl);
+          const thumbRef = ref(storage, videoData.thumbnailUrl);
+          await deleteObject(videoRef);
+          await deleteObject(thumbRef);
+        } catch (storageErr) {
+          console.warn('Storage deletion failed, continuing with Firestore deletion:', storageErr);
+        }
+
+        // Delete from Firestore
+        await deleteDoc(doc(db, 'videos', deletingVideoId));
+        
+        // Cleanup likes, comments, etc. (optional but good practice)
+        // For now, let's just refresh
+        setDeletingVideoId(null);
+        fetchProfile();
+      }
     } catch (err: any) {
       console.error(err);
-      setActionError(err.response?.data?.error || 'O\'chirishda xatolik yuz berdi');
+      setActionError('O\'chirishda xatolik yuz berdi');
     }
   };
 
@@ -94,7 +145,7 @@ const Profile: React.FC = () => {
     if (!editingVideo) return;
 
     try {
-      await api.put(`/videos/${editingVideo.id}`, {
+      await updateDoc(doc(db, 'videos', editingVideo.id), {
         title: editTitle,
         description: editDescription
       });
@@ -102,7 +153,7 @@ const Profile: React.FC = () => {
       fetchProfile();
     } catch (err: any) {
       console.error(err);
-      setActionError(err.response?.data?.error || 'Yangilashda xatolik yuz berdi');
+      setActionError('Yangilashda xatolik yuz berdi');
     }
   };
 

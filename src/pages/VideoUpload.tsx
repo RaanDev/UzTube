@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, X, Image as ImageIcon, Film } from 'lucide-react';
-import api from '../services/api';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, storage } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 
 const VideoUpload: React.FC = () => {
@@ -66,32 +68,56 @@ const VideoUpload: React.FC = () => {
     setError('');
     setFieldErrors({});
 
-    const formData = new FormData();
-    formData.append('title', title);
-    formData.append('description', description);
-    formData.append('video', videoFile!);
-    formData.append('thumbnail', thumbnailFile!);
-
     try {
-      await api.post('/videos', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
-          setUploadProgress(percentCompleted);
+      // 1. Upload Video
+      const videoRef = ref(storage, `videos/${user.id}/${Date.now()}_${videoFile!.name}`);
+      const videoUploadTask = uploadBytesResumable(videoRef, videoFile!);
+
+      // 2. Upload Thumbnail
+      const thumbnailRef = ref(storage, `thumbnails/${user.id}/${Date.now()}_${thumbnailFile!.name}`);
+      const thumbnailUploadTask = uploadBytesResumable(thumbnailRef, thumbnailFile!);
+
+      // Track video progress (as it's usually larger)
+      videoUploadTask.on('state_changed', 
+        (snapshot) => {
+          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+          setUploadProgress(progress);
+        },
+        (error) => {
+          console.error('Video upload error:', error);
+          setError('Video yuklashda xatolik yuz berdi.');
+          setUploading(false);
         }
+      );
+
+      // Wait for both uploads to complete
+      await Promise.all([videoUploadTask, thumbnailUploadTask]);
+
+      const videoUrl = await getDownloadURL(videoRef);
+      const thumbnailUrl = await getDownloadURL(thumbnailRef);
+
+      // 3. Save to Firestore
+      await addDoc(collection(db, 'videos'), {
+        title,
+        description,
+        videoUrl,
+        thumbnailUrl,
+        userId: user.id,
+        userName: user.name,
+        userAvatar: user.avatar || '',
+        views: 0,
+        likes: 0,
+        dislikes: 0,
+        createdAt: new Date().toISOString(),
+        serverCreatedAt: serverTimestamp()
       });
+
       localStorage.removeItem('upload_draft_title');
       localStorage.removeItem('upload_draft_description');
       navigate('/');
     } catch (err: any) {
       console.error('Upload error:', err);
-      if (err.code === 'ECONNABORTED') {
-        setError('Yuklash vaqti tugadi (Timeout). Internet aloqangizni tekshiring.');
-      } else if (err.response?.status === 413) {
-        setError('Fayl hajmi juda katta (Server cheklovi).');
-      } else {
-        setError(err.response?.data?.error || 'Yuklashda xatolik yuz berdi. Iltimos, qaytadan urinib ko\'ring.');
-      }
+      setError('Yuklashda xatolik yuz berdi. Iltimos, qaytadan urinib ko\'ring.');
     } finally {
       setUploading(false);
     }

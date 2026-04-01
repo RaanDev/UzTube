@@ -2,10 +2,21 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Search, Menu, Video, Bell, User, LogOut, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
 import { AppNotification } from '../types';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot, 
+  doc, 
+  updateDoc, 
+  writeBatch,
+  getDocs
+} from 'firebase/firestore';
+import { db } from '../firebase';
 
 interface NavbarProps {
   onMenuClick: () => void;
@@ -19,24 +30,35 @@ const Navbar: React.FC<NavbarProps> = ({ onMenuClick, isDarkMode }) => {
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const navigate = useNavigate();
-  const wsRef = useRef<WebSocket | null>(null);
   const notificationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (user) {
-      fetchNotifications();
-      connectWebSocket();
-    } else {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+    if (!user) {
+      setNotifications([]);
+      setUnreadCount(0);
+      return;
     }
 
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
+    // Real-time notifications from Firestore
+    const q = query(
+      collection(db, 'notifications'),
+      where('userId', '==', user.id),
+      orderBy('created_at', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const notifs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as AppNotification[];
+      
+      setNotifications(notifs);
+      setUnreadCount(notifs.filter(n => !n.isRead).length);
+    }, (error) => {
+      console.error('Bildirishnomalarni yuklashda xato:', error);
+    });
+
+    return () => unsubscribe();
   }, [user]);
 
   useEffect(() => {
@@ -50,60 +72,30 @@ const Navbar: React.FC<NavbarProps> = ({ onMenuClick, isDarkMode }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchNotifications = async () => {
+  const markAsRead = async (id: string) => {
     try {
-      const res = await api.get('/notifications');
-      setNotifications(res.data);
-      setUnreadCount(res.data.filter((n: AppNotification) => !n.isRead).length);
-    } catch (err) {
-      console.error('Bildirishnomalarni yuklashda xato:', err);
-    }
-  };
-
-  const connectWebSocket = () => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const token = localStorage.getItem('token');
-    if (!token) return;
-
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${token}`);
-    
-    ws.onmessage = (event) => {
-      const notification = JSON.parse(event.data);
-      setNotifications(prev => [notification, ...prev]);
-      setUnreadCount(prev => prev + 1);
-      
-      // Browser notification (optional)
-      if (Notification.permission === 'granted') {
-        new window.Notification('UzTube', {
-          body: notification.message,
-          icon: '/favicon.ico'
-        });
-      }
-    };
-
-    ws.onclose = () => {
-      // Reconnect after 5 seconds
-      setTimeout(connectWebSocket, 5000);
-    };
-
-    wsRef.current = ws;
-  };
-
-  const markAsRead = async (id: number) => {
-    try {
-      await api.post(`/notifications/${id}/read`);
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: 1 } : n));
-      setUnreadCount(prev => Math.max(0, prev - 1));
+      await updateDoc(doc(db, 'notifications', id), {
+        isRead: true
+      });
     } catch (err) {
       console.error(err);
     }
   };
 
   const markAllAsRead = async () => {
+    if (!user) return;
     try {
-      await api.post('/notifications/read-all');
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: 1 })));
-      setUnreadCount(0);
+      const q = query(
+        collection(db, 'notifications'),
+        where('userId', '==', user.id),
+        where('isRead', '==', false)
+      );
+      const snapshot = await getDocs(q);
+      const batch = writeBatch(db);
+      snapshot.docs.forEach((d) => {
+        batch.update(d.ref, { isRead: true });
+      });
+      await batch.commit();
     } catch (err) {
       console.error(err);
     }

@@ -12,8 +12,9 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
 import { Channel } from '../types';
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -30,8 +31,28 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, isDarkMode, toggleTh
     if (user && isOpen) {
       const fetchSubscriptions = async () => {
         try {
-          const res = await api.get('/me/subscriptions');
-          setSubscriptions(Array.isArray(res.data) ? res.data : []);
+          const q = query(
+            collection(db, 'subscriptions'),
+            where('subscriberId', '==', user.id)
+          );
+          const snapshot = await getDocs(q);
+          const channelIds = snapshot.docs.map(doc => doc.data().channelId);
+          
+          if (channelIds.length === 0) {
+            setSubscriptions([]);
+            return;
+          }
+
+          const subPromises = channelIds.map(async (id: string) => {
+            const d = await getDoc(doc(db, 'users', id));
+            if (d.exists()) {
+              return { id: d.id, ...d.data() } as Channel;
+            }
+            return null;
+          });
+          
+          const results = await Promise.all(subPromises);
+          setSubscriptions(results.filter(c => c !== null) as Channel[]);
         } catch (err) {
           console.error('Obunalarni yuklashda xatolik:', err);
         }

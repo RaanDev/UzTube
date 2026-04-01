@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ThumbsUp } from 'lucide-react';
-import api from '../services/api';
 import { Video } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow, parseISO } from 'date-fns';
 import { uz } from 'date-fns/locale';
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 
 const LikedVideos: React.FC = () => {
   const { user } = useAuth();
@@ -23,8 +24,28 @@ const LikedVideos: React.FC = () => {
 
     const fetchLikedVideos = async () => {
       try {
-        const res = await api.get('/me/liked-videos');
-        setVideos(Array.isArray(res.data) ? res.data : []);
+        const q = query(
+          collection(db, 'likes'),
+          where('userId', '==', user.id)
+        );
+        const snapshot = await getDocs(q);
+        const videoIds = snapshot.docs.map(doc => doc.data().videoId);
+        
+        if (videoIds.length === 0) {
+          setVideos([]);
+          return;
+        }
+
+        const videoPromises = videoIds.map(async (id: string) => {
+          const d = await getDoc(doc(db, 'videos', id));
+          if (d.exists()) {
+            return { id: d.id, ...d.data() } as Video;
+          }
+          return null;
+        });
+        
+        const results = await Promise.all(videoPromises);
+        setVideos(results.filter(v => v !== null) as Video[]);
       } catch (err) {
         console.error('Liked videolarni yuklashda xatolik:', err);
       } finally {
@@ -43,7 +64,7 @@ const LikedVideos: React.FC = () => {
 
   const formatTime = (dateStr: string) => {
     try {
-      const date = new Date(dateStr + ' UTC');
+      const date = parseISO(dateStr);
       return formatDistanceToNow(date, { addSuffix: true, locale: uz });
     } catch (e) {
       return dateStr;

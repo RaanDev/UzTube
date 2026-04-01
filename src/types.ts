@@ -1,30 +1,32 @@
 export interface User {
-  id: number;
+  id: string;
   name: string;
   email: string;
   avatar?: string;
+  bio?: string;
   created_at?: string;
 }
 
 export interface Video {
-  id: number;
+  id: string;
   title: string;
   description: string;
   videoUrl: string;
   thumbnailUrl: string;
-  userId: number;
+  userId: string;
   userName: string;
   userAvatar?: string;
   views: number;
   likes: number;
   dislikes: number;
   created_at: string;
+  category?: string;
 }
 
 export interface Comment {
-  id: number;
-  videoId: number;
-  userId: number;
+  id: string;
+  videoId: string;
+  userId: string;
   userName: string;
   userAvatar?: string;
   text: string;
@@ -32,17 +34,17 @@ export interface Comment {
 }
 
 export interface Channel {
-  id: number;
+  id: string;
   name: string;
   avatar?: string;
 }
 
 export interface AppNotification {
-  id: number;
-  userId: number;
+  id: string;
+  userId: string;
   type: string;
   message: string;
-  videoId?: number;
-  isRead: number;
+  videoId?: string;
+  isRead: boolean;
   created_at: string;
 }
